@@ -2,7 +2,7 @@ import os
 
 import torch
 from config import BeatSaberConfig
-from peft import PeftConfig, get_peft_model
+from peft import AutoPeftModelForCausalLM
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutput
@@ -31,32 +31,31 @@ class BeatSaberModel(PreTrainedModel):
         self.end_token = token_tensor(self.end_token_id)
 
         print(
-            "Total:",
-            self.count_parameters(self),
-            "Audio Embedder:",
-            self.count_parameters(self.audio_embedder),
+            f"Total parameters: {self.count_parameters(self)}",
+            f"Audio Embedder: {self.count_parameters(self.audio_embedder)}",
         )
 
-        # Freeze the language model.
-        for param in self.lm.parameters():
-            param.requires_grad = False
+        if self.config.lm.freeze:
+            for param in self.lm.parameters():
+                param.requires_grad = False
 
         self.loggable_embeds = None
+        self.inputs_log = None
+        self.audio_log = None
 
     @classmethod
     def from_pretrained(cls, save_directory, *args, **kwargs):
         config = BeatSaberConfig.from_pretrained(save_directory)
         tokenizer = AutoTokenizer.from_pretrained(save_directory)
 
-        lm = AutoModelForCausalLM.from_pretrained(
-            os.path.join(save_directory, "lm"),
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16,
-        )
-
         if config.lm.use_lora:
-            peft_config = PeftConfig.from_pretrained(os.path.join(save_directory, "lm"))
-            lm = get_peft_model(lm, peft_config)
+            lm = AutoPeftModelForCausalLM.from_pretrained(os.path.join(save_directory, "lm"))
+        else:
+            lm = AutoModelForCausalLM.from_pretrained(
+                os.path.join(save_directory, "lm"),
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.bfloat16,
+            )
 
         model = cls(config, lm, tokenizer, *args, **kwargs)
 
@@ -116,7 +115,7 @@ class BeatSaberModel(PreTrainedModel):
 
         embeds[index : index + len(audio_embeds)] = audio_embeds
         labels[index : index + len(audio_embeds)] = torch.full(
-            (audio_embeds.size(0),), -100, dtype=torch.long, device=self.device
+            (len(audio_embeds),), -100, dtype=torch.long, device=self.device
         )
         index += len(audio_embeds)
 
@@ -132,7 +131,7 @@ class BeatSaberModel(PreTrainedModel):
         return index
 
     def _prepare_sample(self, sample, audio_embeds):
-        total_audio_length = self.config.model.num_audio_tokens * len(audio_embeds) * 2
+        total_audio_length = 2 * len(audio_embeds) * self.config.model.num_audio_tokens
         total_segment_length = sum(1 + len(s) + 1 for s in sample["segments"])
         total_length = 1 + len(sample["header"]) + total_audio_length + total_segment_length + 1
 
@@ -149,40 +148,9 @@ class BeatSaberModel(PreTrainedModel):
         embeds[index] = self._token_embedding(self.eos_token)
         labels[index] = self.eos_token.view(1)
 
-        mask = torch.full((embeds.size(0),), 1, dtype=torch.long, device=self.device)
+        mask = torch.full((len(embeds),), 1, dtype=torch.long, device=self.device)
 
         return embeds, labels, mask
-
-    # def generate(self, audio_inputs, header_tokens):
-    #     self.eval()
-    #     self.log_inputs = audio_inputs
-    #     print(header_tokens)
-    #     with torch.no_grad():
-    #         audio_embeds = self.audio_embedder.embed_audio(audio_inputs)
-    #         header_ids = self.tokenizer(header_tokens, return_tensors="pt")["input_ids"].squeeze(0)
-    #         embeds, _ = self._prepare_header(audio_embeds, header_ids)
-
-    #         generated_tokens = []
-    #         start_embed = self._token_embedding(self.start_token)
-    #         for segment_audio in audio_embeds:
-    #             embeds = torch.cat([embeds, start_embed, segment_audio], dim=0)
-
-    #             while True:
-    #                 outputs = self.lm(inputs_embeds=embeds.unsqueeze(0))
-    #                 next_token_logits = outputs.logits[:, -1, :]
-    #                 next_token = torch.argmax(next_token_logits, dim=-1).item()
-    #                 token_embed = self.lm.get_input_embeddings()(
-    #                     torch.tensor([next_token], device=self.device).view(1)
-    #                 )
-    #                 embeds = torch.cat([embeds, token_embed], dim=0)
-    #                 generated_tokens.append(next_token)
-
-    #                 print(self.tokenizer.decode(next_token))
-
-    #                 if next_token == self.end_token:
-    #                     break
-
-    #         return generated_tokens
 
     def forward(self, samples, return_loss=True):
         for sample in samples:
@@ -218,6 +186,8 @@ class BeatSaberModel(PreTrainedModel):
         masks = pad_sequence(masks_list, batch_first=True)
         labels = pad_sequence(labels_list, batch_first=True)
 
+        # self.inputs_log = embeds.squeeze()
+        # self.audio_log = sample_embeds
         outputs = self.lm(inputs_embeds=embeds, attention_mask=masks, labels=labels)
 
         return CausalLMOutput(
@@ -226,3 +196,55 @@ class BeatSaberModel(PreTrainedModel):
             hidden_states=None,
             attentions=None,
         )
+
+    def generate(self, audio_inputs, header_tokens):
+        def eq(embeds):
+            comparison = (self.inputs_log[: len(embeds)] == embeds).all(dim=1)
+            different_indices = torch.where(comparison == False)[0]
+            return different_indices
+
+        audio_embeds = self.audio_embedder.embed_audio(audio_inputs)
+        header_ids = self.tokenizer(header_tokens, return_tensors="pt", add_special_tokens=False)[
+            "input_ids"
+        ].squeeze(0)
+        header_length = 1 + len(header_ids) + len(audio_embeds) * self.config.model.num_audio_tokens
+        embeds = torch.zeros(
+            (header_length, self.config.lm.dim),
+            device=self.device,
+            dtype=torch.bfloat16,
+        )
+        header_labels = torch.full((header_length,), -100, dtype=torch.long, device=self.device)
+        _ = self._prepare_header(embeds, header_labels, audio_embeds, header_ids)
+
+        generated_tokens = []
+        start_embed = self._token_embedding(self.start_token)
+        for segment_audio in audio_embeds:
+            embeds = torch.cat([embeds, start_embed, segment_audio], dim=0)
+            generated_tokens.append(self.start_token_id)
+            import code
+
+            code.interact(local=dict(globals(), **locals()))
+
+            print("- start seg -")
+            while True:
+                outputs = self.lm(inputs_embeds=embeds.unsqueeze(0))
+                next_token_logits = outputs.logits[:, -1, :]
+                next_token = torch.argmax(next_token_logits, dim=-1).item()
+                token_embed = self.lm.get_input_embeddings()(
+                    torch.tensor([next_token], device=self.device).view(1)
+                )
+                embeds = torch.cat([embeds, token_embed], dim=0)
+                generated_tokens.append(next_token)
+
+                print(self.tokenizer.decode(next_token))
+
+                import code
+
+                code.interact(local=dict(globals(), **locals()))
+
+                # embeds = self.inputs_log[: len(embeds)]
+
+                if next_token == self.end_token:
+                    break
+
+        return generated_tokens

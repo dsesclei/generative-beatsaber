@@ -63,7 +63,7 @@ def create_optimizer(model, training_args):
     for key, val in param_dict.items():
         rprint(f"Group {key} has {len(val)} parameters")
 
-    if training_args.use_schedulefree:
+    if training_args.use_schedulefree_optim:
         _, optim_kwargs = Trainer.get_optimizer_cls_and_kwargs(training_args)
         optim_kwargs.update({"r": 0.0, "weight_lr_power": 2.0})
         optim_class = AdamWScheduleFree

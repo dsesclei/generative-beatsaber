@@ -3,13 +3,15 @@ Script to adapt model to Beat Saber structure before training.
 Trains on dropped samples to create a model we can further finetune with a frozen LM.
 Not sure if this would help - it might cause the model to rely too much on its knowledge of chart structure.
 """
+import os
 from pathlib import Path
 
 import torch
-from config import BeatSaberConfig
 from datasets import concatenate_datasets, load_from_disk
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from trl import SFTTrainer
+
+from config import BeatSaberConfig
 
 os.environ["WANDB_PROJECT"] = "beat_saber_adapt"
 os.environ["WANDB_LOG_MODEL"] = "false"

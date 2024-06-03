@@ -164,7 +164,7 @@ def create_sample(
     segment_ids = tokenizer.tokenize(segments).result()
 
     return {
-        "codec": codec_embeddings,
+        "codec_embeddings": codec_embeddings,
         "spectrograms": spectrograms,
         "header": header_ids,
         "segments": segment_ids,

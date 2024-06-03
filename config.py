@@ -20,7 +20,7 @@ class DataConfig:
 @dataclass
 class ModelConfig:
     test_size: float = 0.1
-    batch_size: int = 1
+    batch_size: int = 1  # Use 1 for Llama 3, which doesn't have a pad token by default.
     gradient_accumulation_steps: int = 1
     num_epochs: int = 1
     eval_steps: int = 2500
@@ -28,16 +28,17 @@ class ModelConfig:
     learning_rate_lm: float = 2e-5
     learning_rate_embedding: float = 2e-5
     use_schedulefree_optim: bool = False
-    num_audio_tokens: int = 4
+    num_audio_tokens: int = 8
     embedder: str = "perceiver"
     audio_key: str = "codec_embeddings"
-    conformer: bool = True
+    use_conformer: bool = True
 
 
 @dataclass
 class LMConfig:
     # model: str = "unsloth/gemma-2b"
     # dim: int = 2048
+    freeze: bool = False  # Set use_lora to false if true.
     model: str = "meta-llama/Meta-Llama-3-8B-Instruct"
     dim: int = 4096
     context_size: int = 8192

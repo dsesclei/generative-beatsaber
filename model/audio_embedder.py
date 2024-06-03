@@ -9,21 +9,23 @@ from .perceiver import AudioPerceiver
 class AudioEmbedder(nn.Module):
     def __init__(self, config, device):
         super().__init__()
-        self.to(device)
         self.config = config
         self.device = device
-        self.conformer_processor = ConformerProcessor(config) if config.model.conformer else None
+        self.conformer_processor = (
+            ConformerProcessor(config) if config.model.use_conformer else None
+        )
         self.embedder = self._initialize_embedder(config).to(torch.bfloat16)
         self.project_input = nn.Linear(
             config.data.mel_bands
             if config.model.audio_key == "spectrograms"
             else config.data.codec_dim,
             config.conformer.dim
-            if config.model.conformer
+            if config.model.use_conformer
             else (
                 config.qformer.dim if config.model.embedder == "qformer" else config.perceiver.dim
             ),
-        )
+        ).to(torch.bfloat16)
+        self.to(device).to(torch.bfloat16)
 
     def _initialize_embedder(self, config):
         if config.model.embedder == "qformer":
@@ -40,7 +42,7 @@ class AudioEmbedder(nn.Module):
                 device=self.device,
             )
 
-            if self.config.model.audio_key != "spectrograms":
+            if self.config.model.audio_key == "codec_embeddings":
                 batch = batch.permute(0, 2, 1)
 
             projected_batch = self.project_input(batch)
