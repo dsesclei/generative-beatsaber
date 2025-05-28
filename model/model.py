@@ -41,7 +41,6 @@ class BeatSaberModel(PreTrainedModel):
 
         self.loggable_embeds = None
         self.inputs_log = None
-        self.audio_log = None
 
     @classmethod
     def from_pretrained(cls, save_directory, *args, **kwargs):
@@ -186,8 +185,6 @@ class BeatSaberModel(PreTrainedModel):
         masks = pad_sequence(masks_list, batch_first=True)
         labels = pad_sequence(labels_list, batch_first=True)
 
-        # self.inputs_log = embeds.squeeze()
-        # self.audio_log = sample_embeds
         outputs = self.lm(inputs_embeds=embeds, attention_mask=masks, labels=labels)
 
         return CausalLMOutput(
@@ -198,11 +195,6 @@ class BeatSaberModel(PreTrainedModel):
         )
 
     def generate(self, audio_inputs, header_tokens):
-        def eq(embeds):
-            comparison = (self.inputs_log[: len(embeds)] == embeds).all(dim=1)
-            different_indices = torch.where(comparison == False)[0]
-            return different_indices
-
         audio_embeds = self.audio_embedder.embed_audio(audio_inputs)
         header_ids = self.tokenizer(header_tokens, return_tensors="pt", add_special_tokens=False)[
             "input_ids"
@@ -218,14 +210,12 @@ class BeatSaberModel(PreTrainedModel):
 
         generated_tokens = []
         start_embed = self._token_embedding(self.start_token)
+        different = 0
+        total = 0
         for segment_audio in audio_embeds:
             embeds = torch.cat([embeds, start_embed, segment_audio], dim=0)
             generated_tokens.append(self.start_token_id)
-            import code
 
-            code.interact(local=dict(globals(), **locals()))
-
-            print("- start seg -")
             while True:
                 outputs = self.lm(inputs_embeds=embeds.unsqueeze(0))
                 next_token_logits = outputs.logits[:, -1, :]
@@ -235,14 +225,6 @@ class BeatSaberModel(PreTrainedModel):
                 )
                 embeds = torch.cat([embeds, token_embed], dim=0)
                 generated_tokens.append(next_token)
-
-                print(self.tokenizer.decode(next_token))
-
-                import code
-
-                code.interact(local=dict(globals(), **locals()))
-
-                # embeds = self.inputs_log[: len(embeds)]
 
                 if next_token == self.end_token:
                     break
